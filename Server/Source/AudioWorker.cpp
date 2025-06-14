@@ -19,13 +19,15 @@ namespace e47 {
 std::unordered_map<String, AudioWorker::RecentsListType> AudioWorker::m_recents;
 std::mutex AudioWorker::m_recentsMtx;
 
-AudioWorker::AudioWorker(LogTag* tag) : Thread("AudioWorker"), LogTagDelegate(tag), m_channelMapper(tag) {
+AudioWorker::AudioWorker(LogTag* tag) : Thread("AudioWorker"), LogTagDelegate(tag), m_channelMapper(tag), 
+    m_useGPUProcessing(false), m_gpuBackend(GPUBackend::NONE), m_gpuDeviceId(-1) {
     initAsyncFunctors();
 }
 
 AudioWorker::~AudioWorker() {
     traceScope();
     stopAsyncFunctors();
+    shutdownGPU();
     if (nullptr != m_socket && m_socket->isConnected()) {
         m_socket->close();
     }
@@ -172,6 +174,55 @@ AudioBuffer<double>* AudioWorker::getProcBuffer() {
 template <typename T>
 void AudioWorker::processBlock(AudioBuffer<T>& buffer, MidiBuffer& midi) {
     int numChannels = jmax(m_channelsIn + m_channelsSC, m_channelsOut) + m_chain->getExtraChannels();
+    
+    // Try GPU processing first if enabled
+    if (isGPUEnabled() && m_gpuProcessor->isInitialized()) {
+        TimeTrace::addTracePoint("gpu_process_start");
+        
+        AudioBuffer<T>* targetBuffer = &buffer;
+        AudioBuffer<T>* procBuffer = nullptr;
+        
+        if (numChannels > buffer.getNumChannels()) {
+            // Need to use processing buffer for channel mapping
+            procBuffer = getProcBuffer<T>();
+            procBuffer->setSize(numChannels, buffer.getNumSamples());
+            if (m_activeChannels.getNumActiveChannels(true) > 0) {
+                m_channelMapper.map(&buffer, procBuffer);
+                TimeTrace::addTracePoint("pb_ch_map");
+            } else {
+                procBuffer->clear();
+            }
+            targetBuffer = procBuffer;
+        }
+        
+        // Process with GPU
+        bool gpuSuccess = false;
+        if constexpr (std::is_same_v<T, float>) {
+            gpuSuccess = m_gpuProcessor->processAudioBuffer(static_cast<AudioBuffer<float>&>(*targetBuffer), targetBuffer->getNumSamples());
+        } else if constexpr (std::is_same_v<T, double>) {
+            gpuSuccess = m_gpuProcessor->processAudioBuffer(static_cast<AudioBuffer<double>&>(*targetBuffer), targetBuffer->getNumSamples());
+        }
+        
+        if (gpuSuccess) {
+            TimeTrace::addTracePoint("gpu_process_success");
+            
+            // Apply plugin chain processing after GPU processing
+            m_chain->processBlock(*targetBuffer, midi);
+            
+            if (procBuffer) {
+                m_channelMapper.mapReverse(procBuffer, &buffer);
+                TimeTrace::addTracePoint("pb_ch_map_reverse");
+            }
+            
+            TimeTrace::addTracePoint("gpu_process_complete");
+            return;
+        } else {
+            logln("GPU processing failed, falling back to CPU");
+            TimeTrace::addTracePoint("gpu_process_fallback");
+        }
+    }
+    
+    // CPU processing (original implementation)
     if (numChannels <= buffer.getNumChannels()) {
         m_chain->processBlock(buffer, midi);
     } else {
@@ -247,6 +298,73 @@ void AudioWorker::addToRecentsList(const String& id, const String& host) {
             recents.removeLast(toRemove);
         }
     }
+}
+
+bool AudioWorker::initializeGPU(GPUBackend backend, int deviceId) {
+    traceScope();
+    
+    if (m_gpuProcessor && m_gpuProcessor->isInitialized()) {
+        logln("GPU already initialized");
+        return true;
+    }
+    
+    // Check if GPU is available
+    if (!GPUAudioProcessor::isGPUAvailable()) {
+        logln("No GPU devices available");
+        return false;
+    }
+    
+    // Create GPU processor
+    m_gpuProcessor = GPUAudioProcessor::create(backend);
+    if (!m_gpuProcessor) {
+        logln("Failed to create GPU processor for backend: " << static_cast<int>(backend));
+        return false;
+    }
+    
+    // Initialize GPU processor
+    if (!m_gpuProcessor->initialize(deviceId)) {
+        logln("Failed to initialize GPU processor");
+        m_gpuProcessor.reset();
+        return false;
+    }
+    
+    // Set processing precision
+    m_gpuProcessor->setProcessingPrecision(m_doublePrecision);
+    
+    // Allocate GPU buffers
+    int maxChannels = jmax(m_channelsIn + m_channelsSC, m_channelsOut);
+    if (!m_gpuProcessor->allocateBuffers(maxChannels, m_samplesPerBlock)) {
+        logln("Failed to allocate GPU buffers");
+        m_gpuProcessor.reset();
+        return false;
+    }
+    
+    m_gpuBackend = backend;
+    m_gpuDeviceId = deviceId;
+    m_useGPUProcessing = true;
+    
+    logln("GPU processing initialized successfully - Backend: " << static_cast<int>(backend) 
+          << ", Device: " << deviceId);
+    
+    return true;
+}
+
+void AudioWorker::shutdownGPU() {
+    traceScope();
+    
+    if (m_gpuProcessor) {
+        logln("Shutting down GPU processing");
+        m_gpuProcessor->shutdown();
+        m_gpuProcessor.reset();
+    }
+    
+    m_useGPUProcessing = false;
+    m_gpuBackend = GPUBackend::NONE;
+    m_gpuDeviceId = -1;
+}
+
+std::vector<GPUDeviceInfo> AudioWorker::getAvailableGPUDevices() const {
+    return GPUAudioProcessor::getAvailableDevices();
 }
 
 }  // namespace e47

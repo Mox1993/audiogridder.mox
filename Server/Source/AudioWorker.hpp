@@ -16,6 +16,7 @@
 #include "Message.hpp"
 #include "Utils.hpp"
 #include "ChannelMapper.hpp"
+#include "GPUAudioProcessor.hpp"
 
 namespace e47 {
 
@@ -80,6 +81,13 @@ class AudioWorker : public Thread, public LogTagDelegate {
     String getRecentsList(String host) const;
     void addToRecentsList(const String& id, const String& host);
 
+    // GPU processing methods
+    bool initializeGPU(GPUBackend backend = GPUBackend::AUTO, int deviceId = -1);
+    void shutdownGPU();
+    bool isGPUEnabled() const { return m_useGPUProcessing && m_gpuProcessor != nullptr; }
+    std::vector<GPUDeviceInfo> getAvailableGPUDevices() const;
+    void setGPUProcessing(bool enabled) { m_useGPUProcessing = enabled; }
+
   private:
     std::mutex m_mtx;
     std::atomic_bool m_wasOk{true};
@@ -99,6 +107,12 @@ class AudioWorker : public Thread, public LogTagDelegate {
 
     AudioBuffer<float> m_procBufferF;
     AudioBuffer<double> m_procBufferD;
+
+    // GPU processing support
+    std::unique_ptr<GPUAudioProcessor> m_gpuProcessor;
+    bool m_useGPUProcessing;
+    GPUBackend m_gpuBackend;
+    int m_gpuDeviceId;
 
     bool waitForData();
 

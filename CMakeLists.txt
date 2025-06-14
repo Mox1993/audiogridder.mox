@@ -16,6 +16,8 @@ option(AG_ENABLE_SENTRY "Enable crash reporting via sentry." off)
 option(AG_ENABLE_ASAN "Enable AddressSanitizer." off)
 option(AG_VST2_PLUGIN_ENABLED "Enable the VST2 plugins." off)
 option(AG_AAX_PLUGIN_ENABLED "Enable the AAX plugins." off)
+option(AG_ENABLE_CUDA "Enable CUDA GPU processing." off)
+option(AG_ENABLE_OPENCL "Enable OpenCL GPU processing." off)
 
 # Uncomment and set to proper path for building with VSCode
 #set(AG_DEPS_ROOT $ENV{HOME}/audiogridder/audiogridder-deps/linux-x86_64)
@@ -35,9 +37,33 @@ if(AG_DEPS_ROOT)
   if(NOT BOOST_ROOT)
     set(BOOST_ROOT ${AG_DEPS_ROOT} CACHE STRING "Boost directory")
   endif()
-  set(Boost_USE_STATIC_RUNTIME ON)
+set(Boost_USE_STATIC_RUNTIME ON)
   set(Boost_USE_STATIC_LIBS ON)
   set(Boost_NO_SYSTEM_PATHS ON)
+endif()
+
+# GPU Processing Support
+if(AG_ENABLE_CUDA)
+  find_package(CUDAToolkit QUIET)
+  if(CUDAToolkit_FOUND)
+    enable_language(CUDA)
+    add_compile_definitions(AG_ENABLE_CUDA)
+    message(STATUS "CUDA support enabled")
+  else()
+    message(WARNING "CUDA requested but not found, disabling CUDA support")
+    set(AG_ENABLE_CUDA OFF)
+  endif()
+endif()
+
+if(AG_ENABLE_OPENCL)
+  find_package(OpenCL QUIET)
+  if(OpenCL_FOUND)
+    add_compile_definitions(AG_ENABLE_OPENCL)
+    message(STATUS "OpenCL support enabled")
+  else()
+    message(WARNING "OpenCL requested but not found, disabling OpenCL support")
+    set(AG_ENABLE_OPENCL OFF)
+  endif()
 endif()
 
 set(AG_VST2_SDK_DEFAULT "${AG_SDKS_ROOT}/vstsdk2.4")
@@ -108,6 +134,19 @@ link_directories(${WEBP_LIBRARY_DIRS})
 
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/Common/Source AG_SOURCES_COMMON)
 list(REMOVE_ITEM AG_SOURCES_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/Common/Source/TraceReader.cpp")
+
+# Add GPU processing sources
+list(APPEND AG_SOURCES_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/Common/Source/GPUAudioProcessor.cpp")
+
+if(AG_ENABLE_CUDA)
+  list(APPEND AG_SOURCES_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/Common/Source/CUDAAudioProcessor.cpp")
+  # Set CUDA properties for the CUDA source file
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/Common/Source/CUDAAudioProcessor.cpp" PROPERTIES LANGUAGE CUDA)
+endif()
+
+if(AG_ENABLE_OPENCL)
+  list(APPEND AG_SOURCES_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/Common/Source/OpenCLAudioProcessor.cpp")
+endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   list(REMOVE_ITEM AG_SOURCES_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/Common/Source/WindowHelper.mm")

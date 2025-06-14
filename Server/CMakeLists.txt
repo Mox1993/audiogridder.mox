@@ -77,6 +77,15 @@ target_link_libraries(AudioGridderServer PRIVATE
   ${WEBP_LIBRARIES}
   ${SENTRY_LIBRARIES})
 
+# Add GPU libraries
+if(AG_ENABLE_CUDA)
+  target_link_libraries(AudioGridderServer PRIVATE CUDA::cudart CUDA::cublas)
+endif()
+
+if(AG_ENABLE_OPENCL)
+  target_link_libraries(AudioGridderServer PRIVATE OpenCL::OpenCL)
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(AudioGridderServer PRIVATE  X11 Xtst xcb xcb-shm xcb-xfixes xcb-shape)
   target_compile_definitions(AudioGridderServer PRIVATE JUCE_LINUX=1)
